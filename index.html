@@ -3,7 +3,14 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#111111" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Камера" />
   <title>Камера: запись с нужным соотношением сторон</title>
+
+  <!-- PWA: подключение манифеста -->
+  <link rel="manifest" href="manifest.json">
 
   <style>
     * {
@@ -164,6 +171,7 @@
       statusEl.textContent = text;
     }
 
+    // Проверка при загрузке страницы
     window.addEventListener('load', () => {
       const problems = [];
 
@@ -188,6 +196,14 @@
       }
     });
 
+    /**
+     * Понимает:
+     * "1:1"
+     * "1.85:1"
+     * "1:1.85"
+     * "9:16"
+     * "2.39"
+     */
     function parseRatio(str) {
       if (!str) return 1;
 
@@ -216,9 +232,14 @@
     }
 
     function even(value) {
+      // Видеокодеки обычно любят чётные размеры
       return Math.max(2, Math.round(value / 2) * 2);
     }
 
+    /**
+     * Вычисляет, какую часть исходного кадра нужно вырезать,
+     * чтобы получить нужное соотношение сторон.
+     */
     function computeLayout() {
       const vw = video.videoWidth;
       const vh = video.videoHeight;
@@ -232,9 +253,11 @@
       let cropH;
 
       if (sourceAspect > targetAspect) {
+        // Исходник шире, чем нужно: обрезаем слева и справа
         cropH = vh;
         cropW = vh * targetAspect;
       } else {
+        // Исходник выше, чем нужно: обрезаем сверху и снизу
         cropW = vw;
         cropH = vw / targetAspect;
       }
@@ -245,12 +268,14 @@
       const sx = (vw - cropW) / 2;
       const sy = (vh - cropH) / 2;
 
+      // Ограничение выходного размера
       const maxSide = 1920;
 
       let outW;
       let outH;
 
       if (targetAspect >= 1) {
+        // Горизонтальное соотношение, например 1.85:1
         outH = Math.min(cropH, 1080);
         outW = outH * targetAspect;
 
@@ -259,6 +284,7 @@
           outH = outW / targetAspect;
         }
       } else {
+        // Вертикальное соотношение, например 9:16
         outW = Math.min(cropW, 1080);
         outH = outW / targetAspect;
 
@@ -284,6 +310,9 @@
       };
     }
 
+    /**
+     * Масштабирует canvas под размер экрана с сохранением пропорций.
+     */
     function fitCanvasToScreen() {
       if (!canvas.width || !canvas.height) return;
 
@@ -339,6 +368,7 @@
         ratioSelect.value === 'custom' ? '' : 'none';
     });
 
+    // Пересчитываем размер canvas при изменении размера окна
     window.addEventListener('resize', fitCanvasToScreen);
     window.addEventListener('orientationchange', () => {
       setTimeout(fitCanvasToScreen, 100);
@@ -351,6 +381,7 @@
         height: { ideal: 1080 }
       };
 
+      // Сначала пробуем видео + аудио
       try {
         return await navigator.mediaDevices.getUserMedia({
           audio: true,
@@ -360,6 +391,7 @@
         console.warn('Не получилось с аудио, пробуем без него', err);
       }
 
+      // Если микрофон недоступен или запрещён
       try {
         return await navigator.mediaDevices.getUserMedia({
           audio: false,
@@ -573,6 +605,21 @@
     window.addEventListener('beforeunload', () => {
       stopCamera();
     });
+
+    // ============================
+    // PWA: Регистрация Service Worker
+    // ============================
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/camera-aspect/sw.js')
+          .then(registration => {
+            console.log('Service Worker зарегистрирован:', registration.scope);
+          })
+          .catch(error => {
+            console.error('Ошибка регистрации Service Worker:', error);
+          });
+      });
+    }
   </script>
 </body>
 </html>
