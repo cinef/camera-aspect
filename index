@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Камера: запись с нужным соотношением сторон</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      margin: 16px;
+      background: #111;
+      color: #eee;
+    }
+
+    h2 {
+      margin-top: 0;
+      font-size: 20px;
+    }
+
+    .row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+
+    button,
+    select,
+    input,
+    a {
+      padding: 10px 14px;
+      border-radius: 10px;
+      border: 0;
+      font-size: 16px;
+      box-sizing: border-box;
+    }
+
+    button:disabled {
+      opacity: 0.45;
+    }
+
+    #startCamera {
+      background: #2f6fed;
+      color: white;
+    }
+
+    #startRec {
+      background: #d23f3f;
+      color: white;
+    }
+
+    #stopRec {
+      background: #666;
+      color: white;
+    }
+
+    #download {
+      background: #2ea043;
+      color: white;
+      text-decoration: none;
+    }
+
+    #status {
+      margin: 10px 0;
+      min-height: 20px;
+      color: #ffd75e;
+    }
+
+    #preview {
+      width: 100%;
+      max-width: 760px;
+      background: #000;
+      border-radius: 12px;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <h2>Запись видео с заданным соотношением сторон</h2>
+
+  <div class="row">
+    <label for="ratio">Соотношение сторон:</label>
+
+    <select id="ratio">
+      <!-- Если нужно как у вас в списке, можно поменять местами.
+           Парсер понимает и 1.85:1, и 1:1.85. -->
+      <option value="1:1">1:1</option>
+      <option value="1.37:1">1.37:1 / Академический</option>
+      <option value="1.66:1">1.66:1 / Европейский</option>
+      <option value="1.85:1" selected>1.85:1 / US widescreen</option>
+      <option value="2.20:1">2.20:1 / 70mm</option>
+      <option value="2.39:1">2.39:1 / Scope</option>
+
+      <!-- Если вам нужны именно вертикальные варианты "1:1.85", используйте их -->
+      <option value="1:1.37">1:1.37 вертикальный</option>
+      <option value="1:1.66">1:1.66 вертикальный</option>
+      <option value="1:1.85">1:1.85 вертикальный</option>
+      <option value="1:2.20">1:2.20 вертикальный</option>
+      <option value="1:2.39">1:2.39 вертикальный</option>
+
+      <!-- Если действительно нужен 1:37 -->
+      <option value="1:37">1:37 очень узкий вертикальный</option>
+
+      <option value="custom">Своё соотношение</option>
+    </select>
+
+    <input
+      id="customRatio"
+      placeholder="Например 1.85:1 или 1:1.85"
+      style="display: none; min-width: 220px;"
+    />
+  </div>
+
+  <div class="row">
+    <button id="startCamera">Включить камеру</button>
+    <button id="startRec" disabled>Начать запись</button>
+    <button id="stopRec" disabled>Остановить</button>
+    <a id="download" style="display: none;">Скачать видео</a>
+  </div>
+
+  <div id="status"></div>
+
+  <canvas id="preview"></canvas>
+
+  <video id="camera" playsinline muted style="display: none;"></video>
+
+  <script>
+    const video = document.getElementById('camera');
+    const canvas = document.getElementById('preview');
+    const ctx = canvas.getContext('2d', { alpha: false });
+
+    const ratioSelect = document.getElementById('ratio');
+    const customRatioInput = document.getElementById('customRatio');
+
+    const startCameraBtn = document.getElementById('startCamera');
+    const startRecBtn = document.getElementById('startRec');
+    const stopRecBtn = document.getElementById('stopRec');
+    const downloadLink = document.getElementById('download');
+    const statusEl = document.getElementById('status');
+
+    let cameraStream = null;
+    let rafId = null;
+    let mediaRecorder = null;
+    let chunks = [];
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+    }
+
+    /**
+     * Понимает:
+     * "1:1"
+     * "1.85:1"
+     * "1:1.85"
+     * "2.39"
+     */
+    function parseRatio(str) {
+      if (!str) return 1;
+
+      str = String(str).trim().replace(',', '.');
+
+      if (str.includes(':')) {
+        const parts = str.split(':');
+        const w = parseFloat(parts[0]);
+        const h = parseFloat(parts[1]);
+
+        if (Number.isFinite(w) && Number.isFinite(h) && h > 0) {
+          return w / h;
+        }
+      }
+
+      const n = parseFloat(str);
+      return Number.isFinite(n) && n > 0 ? n : 1;
+    }
+
+    function getAspect() {
+      if (ratioSelect.value === 'custom') {
+        return parseRatio(customRatioInput.value || '1:1');
+      }
+
+      return parseRatio(ratioSelect.value);
+    }
+
+    function even(value) {
+      // Видеокодеки обычно любят чётные размеры
+      return Math.max(2, Math.round(value / 2) * 2);
+    }
+
+    /**
+     * Считает, какую часть исходного кадра нужно вырезать,
+     * чтобы получить нужное соотношение сторон.
+     */
+    function computeLayout() {
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+
+      if (!vw || !vh) return null;
+
+      const targetAspect = getAspect();
+      const sourceAspect = vw / vh;
+
+      let cropW;
+      let cropH;
+
+      if (sourceAspect > targetAspect) {
+        // Исходник шире, чем нужно: обрезаем слева и справа
+        cropH = vh;
+        cropW = vh * targetAspect;
+      } else {
+        // Исходник выше, чем нужно: обрезаем сверху и снизу
+        cropW = vw;
+        cropH = vw / targetAspect;
+      }
+
+      cropW = Math.min(cropW, vw);
+      cropH = Math.min(cropH, vh);
+
+      const sx = (vw - cropW) / 2;
+      const sy = (vh - cropH) / 2;
+
+      // Ограничение выходного размера, чтобы не писать слишком тяжёлое видео.
+      // Можно увеличить, например, до 3840 для 4K.
+      const maxSide = 1920;
+
+      let outW;
+      let outH;
+
+      if (targetAspect >= 1) {
+        // Горизонтальное соотношение, например 1.85:1
+        outH = Math.min(cropH, 1080);
+        outW = outH * targetAspect;
+
+        if (outW > maxSide) {
+          outW = maxSide;
+          outH = outW / targetAspect;
+        }
+      } else {
+        // Вертикальное соотношение, например 1:1.85
+        outW = Math.min(cropW, 1080);
+        outH = outW / targetAspect;
+
+        if (outH > maxSide) {
+          outH = maxSide;
+          outW = outH * targetAspect;
+        }
+      }
+
+      outW = even(outW);
+      outH = even(outH);
+
+      if (outW < 2 || outH < 2) return null;
+
+      return {
+        sx,
+        sy,
+        cropW,
+        cropH,
+        outW,
+        outH,
+        targetAspect
+      };
+    }
+
+    function drawLoop() {
+      if (video.readyState >= 2) {
+        const layout = computeLayout();
+
+        if (layout) {
+          if (canvas.width !== layout.outW || canvas.height !== layout.outH) {
+            canvas.width = layout.outW;
+            canvas.height = layout.outH;
+          }
+
+          ctx.drawImage(
+            video,
+            layout.sx,
+            layout.sy,
+            layout.cropW,
+            layout.cropH,
+            0,
+            0,
+            canvas.width,
+            canvas.height
+          );
+        }
+      }
+
+      rafId = requestAnimationFrame(drawLoop);
+    }
+
+    ratioSelect.addEventListener('change', () => {
+      customRatioInput.style.display =
+        ratioSelect.value === 'custom' ? '' : 'none';
+    });
+
+    async function getCameraStream() {
+      const videoConstraints = {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 }
+      };
+
+      // Сначала пробуем видео + аудио
+      try {
+        return await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: videoConstraints
+        });
+      } catch (err) {
+        console.warn('Не получилось с аудио, пробуем без него', err);
+      }
+
+      // Если микрофон недоступен или запрещён
+      try {
+        return await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: videoConstraints
+        });
+      } catch (err) {
+        console.warn('Не получилось с заданным разрешением, пробуем базовое видео', err);
+      }
+
+      return await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: true
+      });
+    }
+
+    startCameraBtn.addEventListener('click', async () => {
+      try {
+        stopCamera();
+
+        setStatus('Запрашиваю камеру и микрофон...');
+
+        cameraStream = await getCameraStream();
+
+        video.srcObject = cameraStream;
+        await video.play();
+
+        startRecBtn.disabled = false;
+
+        const hasAudio = cameraStream.getAudioTracks().length > 0;
+        setStatus(
+          `Камера готова. ${hasAudio ? 'Звук включён.' : 'Звук недоступен.'} ` +
+          'Выберите соотношение и нажмите «Начать запись».'
+        );
+
+        if (!rafId) {
+          drawLoop();
+        }
+      } catch (err) {
+        console.error(err);
+        setStatus('Ошибка доступа к камере: ' + err.message);
+      }
+    });
+
+    function stopCamera() {
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        try {
+          mediaRecorder.stop();
+        } catch (e) {
+          console.warn(e);
+        }
+      }
+
+      if (cameraStream) {
+        cameraStream.getTracks().forEach(track => track.stop());
+        cameraStream = null;
+      }
+
+      if (rafId) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+
+      startRecBtn.disabled = true;
+      stopRecBtn.disabled = true;
+      ratioSelect.disabled = false;
+      customRatioInput.disabled = false;
+    }
+
+    function pickMimeType() {
+      if (typeof MediaRecorder === 'undefined') return '';
+      if (typeof MediaRecorder.isTypeSupported !== 'function') return '';
+
+      const candidates = [
+        'video/mp4;codecs=avc1.640028,mp4a.40.2',
+        'video/mp4;codecs=avc1,mp4a.40.2',
+        'video/mp4',
+        'video/webm;codecs=vp9,opus',
+        'video/webm;codecs=vp8,opus',
+        'video/webm'
+      ];
+
+      for (const type of candidates) {
+        try {
+          if (MediaRecorder.isTypeSupported(type)) {
+            return type;
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      return '';
+    }
+
+    startRecBtn.addEventListener('click', () => {
+      if (!cameraStream) {
+        setStatus('Сначала включите камеру.');
+        return;
+      }
+
+      if (!canvas.width || !canvas.height) {
+        setStatus('Подождите, пока появится изображение с камеры.');
+        return;
+      }
+
+      if (typeof canvas.captureStream !== 'function') {
+        setStatus('Этот браузер не поддерживает canvas.captureStream().');
+        return;
+      }
+
+      const canvasStream = canvas.captureStream(30);
+
+      const mixedTracks = [
+        ...canvasStream.getVideoTracks(),
+        ...cameraStream.getAudioTracks()
+      ];
+
+      const mixedStream = new MediaStream(mixedTracks);
+
+      const mimeType = pickMimeType();
+
+      const options = {
+        videoBitsPerSecond: 8_000_000
+      };
+
+      if (mimeType) {
+        options.mimeType = mimeType;
+      }
+
+      try {
+        mediaRecorder = new MediaRecorder(mixedStream, options);
+      } catch (err) {
+        console.warn('Не удалось создать MediaRecorder с MIME type, пробую без него', err);
+        mediaRecorder = new MediaRecorder(mixedStream);
+      }
+
+      chunks = [];
+
+      mediaRecorder.ondataavailable = event => {
+        if (event.data && event.data.size > 0) {
+          chunks.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = saveVideo;
+
+      mediaRecorder.start(1000);
+
+      startRecBtn.disabled = true;
+      stopRecBtn.disabled = false;
+      ratioSelect.disabled = true;
+      customRatioInput.disabled = true;
+
+      setStatus(
+        `Идёт запись... Формат: ${mediaRecorder.mimeType || 'по умолчанию'}. ` +
+        'Соотношение во время записи лучше не менять.'
+      );
+    });
+
+    stopRecBtn.addEventListener('click', () => {
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
+      }
+
+      stopRecBtn.disabled = true;
+    });
+
+    function saveVideo() {
+      const mimeType = mediaRecorder?.mimeType || 'video/webm';
+      const blob = new Blob(chunks, { type: mimeType });
+
+      const url = URL.createObjectURL(blob);
+      const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
+
+      const ratioNameRaw =
+        ratioSelect.value === 'custom'
+          ? customRatioInput.value || 'custom'
+          : ratioSelect.value;
+
+      const ratioName = ratioNameRaw.replace(/[:.]/g, '_');
+
+      const dateStamp = new Date()
+        .toISOString()
+        .replace(/[:.]/g, '-');
+
+      downloadLink.href = url;
+      downloadLink.download = `video_${ratioName}_${dateStamp}.${ext}`;
+      downloadLink.style.display = 'inline-block';
+      downloadLink.textContent = 'Скачать видео';
+
+      startRecBtn.disabled = false;
+      ratioSelect.disabled = false;
+      customRatioInput.disabled = false;
+
+      setStatus('Готово. Можно скачать файл.');
+    }
+
+    window.addEventListener('beforeunload', () => {
+      stopCamera();
+    });
+  </script>
+</body>
+</html>
