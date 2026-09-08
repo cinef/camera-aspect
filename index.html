@@ -4,16 +4,25 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Камера: запись с нужным соотношением сторон</title>
+
   <style>
+    * {
+      box-sizing: border-box;
+    }
+
     body {
       font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-      margin: 16px;
+      margin: 0;
+      padding: 16px;
       background: #111;
       color: #eee;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
     }
 
     h2 {
-      margin-top: 0;
+      margin: 0 0 12px 0;
       font-size: 20px;
     }
 
@@ -33,7 +42,6 @@
       border-radius: 10px;
       border: 0;
       font-size: 16px;
-      box-sizing: border-box;
     }
 
     button:disabled {
@@ -65,17 +73,30 @@
       margin: 10px 0;
       min-height: 20px;
       color: #ffd75e;
+      white-space: pre-wrap;
+    }
+
+    .canvas-wrapper {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 10px 0;
+      min-height: 200px;
     }
 
     #preview {
-      width: 100%;
-      max-width: 760px;
       background: #000;
       border-radius: 12px;
       display: block;
+      max-width: 100%;
+      max-height: 100%;
+      width: auto;
+      height: auto;
     }
   </style>
 </head>
+
 <body>
   <h2>Запись видео с заданным соотношением сторон</h2>
 
@@ -83,8 +104,7 @@
     <label for="ratio">Соотношение сторон:</label>
 
     <select id="ratio">
-      <!-- Если нужно как у вас в списке, можно поменять местами.
-           Парсер понимает и 1.85:1, и 1:1.85. -->
+      <!-- Горизонтальные киноформаты -->
       <option value="1:1">1:1</option>
       <option value="1.37:1">1.37:1 / Академический</option>
       <option value="1.66:1">1.66:1 / Европейский</option>
@@ -92,14 +112,13 @@
       <option value="2.20:1">2.20:1 / 70mm</option>
       <option value="2.39:1">2.39:1 / Scope</option>
 
-      <!-- Если вам нужны именно вертикальные варианты "1:1.85", используйте их -->
+      <!-- Вертикальные варианты -->
       <option value="1:1.37">1:1.37 вертикальный</option>
       <option value="1:1.66">1:1.66 вертикальный</option>
       <option value="1:1.85">1:1.85 вертикальный</option>
       <option value="1:2.20">1:2.20 вертикальный</option>
       <option value="1:2.39">1:2.39 вертикальный</option>
 
-      <!-- Если действительно нужен 1:37 -->
       <option value="1:37">1:37 очень узкий вертикальный</option>
 
       <option value="custom">Своё соотношение</option>
@@ -121,7 +140,9 @@
 
   <div id="status"></div>
 
-  <canvas id="preview"></canvas>
+  <div class="canvas-wrapper">
+    <canvas id="preview"></canvas>
+  </div>
 
   <video id="camera" playsinline muted style="display: none;"></video>
 
@@ -129,6 +150,7 @@
     const video = document.getElementById('camera');
     const canvas = document.getElementById('preview');
     const ctx = canvas.getContext('2d', { alpha: false });
+    const canvasWrapper = document.querySelector('.canvas-wrapper');
 
     const ratioSelect = document.getElementById('ratio');
     const customRatioInput = document.getElementById('customRatio');
@@ -147,6 +169,31 @@
     function setStatus(text) {
       statusEl.textContent = text;
     }
+
+    // Проверка при загрузке страницы
+    window.addEventListener('load', () => {
+      const problems = [];
+
+      if (!window.isSecureContext) {
+        problems.push('страница должна быть открыта по HTTPS или через localhost');
+      }
+
+      const supportsCamera = !!(
+        navigator.mediaDevices &&
+        navigator.mediaDevices.getUserMedia
+      );
+
+      if (!supportsCamera) {
+        problems.push('браузер не поддерживает доступ к камере через getUserMedia');
+      }
+
+      if (problems.length > 0) {
+        setStatus('Ошибка: ' + problems.join('; ') + '.');
+        startCameraBtn.disabled = true;
+      } else {
+        setStatus('Страница готова. Нажмите «Включить камеру».');
+      }
+    });
 
     /**
      * Понимает:
@@ -183,12 +230,11 @@
     }
 
     function even(value) {
-      // Видеокодеки обычно любят чётные размеры
       return Math.max(2, Math.round(value / 2) * 2);
     }
 
     /**
-     * Считает, какую часть исходного кадра нужно вырезать,
+     * Вычисляет, какую часть исходного кадра нужно вырезать,
      * чтобы получить нужное соотношение сторон.
      */
     function computeLayout() {
@@ -204,11 +250,9 @@
       let cropH;
 
       if (sourceAspect > targetAspect) {
-        // Исходник шире, чем нужно: обрезаем слева и справа
         cropH = vh;
         cropW = vh * targetAspect;
       } else {
-        // Исходник выше, чем нужно: обрезаем сверху и снизу
         cropW = vw;
         cropH = vw / targetAspect;
       }
@@ -219,15 +263,12 @@
       const sx = (vw - cropW) / 2;
       const sy = (vh - cropH) / 2;
 
-      // Ограничение выходного размера, чтобы не писать слишком тяжёлое видео.
-      // Можно увеличить, например, до 3840 для 4K.
       const maxSide = 1920;
 
       let outW;
       let outH;
 
       if (targetAspect >= 1) {
-        // Горизонтальное соотношение, например 1.85:1
         outH = Math.min(cropH, 1080);
         outW = outH * targetAspect;
 
@@ -236,7 +277,6 @@
           outH = outW / targetAspect;
         }
       } else {
-        // Вертикальное соотношение, например 1:1.85
         outW = Math.min(cropW, 1080);
         outH = outW / targetAspect;
 
@@ -262,6 +302,31 @@
       };
     }
 
+    /**
+     * Масштабирует canvas под размер экрана с сохранением пропорций.
+     */
+    function fitCanvasToScreen() {
+      if (!canvas.width || !canvas.height) return;
+
+      const maxWidth = canvasWrapper.clientWidth;
+      const maxHeight = canvasWrapper.clientHeight;
+
+      if (maxWidth <= 0 || maxHeight <= 0) return;
+
+      const aspect = canvas.width / canvas.height;
+
+      let cssWidth = maxWidth;
+      let cssHeight = cssWidth / aspect;
+
+      if (cssHeight > maxHeight) {
+        cssHeight = maxHeight;
+        cssWidth = cssHeight * aspect;
+      }
+
+      canvas.style.width = Math.floor(cssWidth) + 'px';
+      canvas.style.height = Math.floor(cssHeight) + 'px';
+    }
+
     function drawLoop() {
       if (video.readyState >= 2) {
         const layout = computeLayout();
@@ -270,6 +335,7 @@
           if (canvas.width !== layout.outW || canvas.height !== layout.outH) {
             canvas.width = layout.outW;
             canvas.height = layout.outH;
+            fitCanvasToScreen();
           }
 
           ctx.drawImage(
@@ -294,6 +360,12 @@
         ratioSelect.value === 'custom' ? '' : 'none';
     });
 
+    // Пересчитываем размер canvas при изменении размера окна
+    window.addEventListener('resize', fitCanvasToScreen);
+    window.addEventListener('orientationchange', () => {
+      setTimeout(fitCanvasToScreen, 100);
+    });
+
     async function getCameraStream() {
       const videoConstraints = {
         facingMode: { ideal: 'environment' },
@@ -301,7 +373,6 @@
         height: { ideal: 1080 }
       };
 
-      // Сначала пробуем видео + аудио
       try {
         return await navigator.mediaDevices.getUserMedia({
           audio: true,
@@ -311,7 +382,6 @@
         console.warn('Не получилось с аудио, пробуем без него', err);
       }
 
-      // Если микрофон недоступен или запрещён
       try {
         return await navigator.mediaDevices.getUserMedia({
           audio: false,
@@ -341,6 +411,7 @@
         startRecBtn.disabled = false;
 
         const hasAudio = cameraStream.getAudioTracks().length > 0;
+
         setStatus(
           `Камера готова. ${hasAudio ? 'Звук включён.' : 'Звук недоступен.'} ` +
           'Выберите соотношение и нажмите «Начать запись».'
@@ -382,7 +453,10 @@
 
     function pickMimeType() {
       if (typeof MediaRecorder === 'undefined') return '';
-      if (typeof MediaRecorder.isTypeSupported !== 'function') return '';
+
+      if (typeof MediaRecorder.isTypeSupported !== 'function') {
+        return '';
+      }
 
       const candidates = [
         'video/mp4;codecs=avc1.640028,mp4a.40.2',
@@ -419,6 +493,11 @@
 
       if (typeof canvas.captureStream !== 'function') {
         setStatus('Этот браузер не поддерживает canvas.captureStream().');
+        return;
+      }
+
+      if (typeof MediaRecorder === 'undefined') {
+        setStatus('Этот браузер не поддерживает MediaRecorder.');
         return;
       }
 
@@ -480,7 +559,11 @@
     });
 
     function saveVideo() {
-      const mimeType = mediaRecorder?.mimeType || 'video/webm';
+      const mimeType =
+        mediaRecorder && mediaRecorder.mimeType
+          ? mediaRecorder.mimeType
+          : 'video/webm';
+
       const blob = new Blob(chunks, { type: mimeType });
 
       const url = URL.createObjectURL(blob);
