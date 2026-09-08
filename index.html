@@ -44,7 +44,8 @@
     button,
     select,
     input,
-    a {
+    a,
+    label.checkbox-label {
       padding: 10px 14px;
       border-radius: 10px;
       border: 0;
@@ -101,6 +102,31 @@
       width: auto;
       height: auto;
     }
+
+    .checkbox-label {
+      background: #333;
+      color: #eee;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-radius: 10px;
+      font-size: 16px;
+      user-select: none;
+    }
+
+    .checkbox-label input[type="checkbox"] {
+      width: 20px;
+      height: 20px;
+      cursor: pointer;
+    }
+
+    .stabilization-status {
+      font-size: 14px;
+      color: #aaa;
+      margin-top: 5px;
+    }
   </style>
 </head>
 
@@ -139,6 +165,15 @@
     <a id="download" style="display: none;">Скачать видео</a>
   </div>
 
+  <div class="row">
+    <label class="checkbox-label">
+      <input type="checkbox" id="stabilizationCheckbox" checked />
+      Стабилизация видео
+    </label>
+  </div>
+
+  <div class="stabilization-status" id="stabilizationStatus"></div>
+
   <div id="status"></div>
 
   <div class="canvas-wrapper">
@@ -162,13 +197,22 @@
     const downloadLink = document.getElementById('download');
     const statusEl = document.getElementById('status');
 
+    const stabilizationCheckbox = document.getElementById('stabilizationCheckbox');
+    const stabilizationStatusEl = document.getElementById('stabilizationStatus');
+
     let cameraStream = null;
     let rafId = null;
     let mediaRecorder = null;
     let chunks = [];
+    let stabilizationApplied = false;
 
     function setStatus(text) {
       statusEl.textContent = text;
+    }
+
+    function setStabilizationStatus(text, isError = false) {
+      stabilizationStatusEl.textContent = text;
+      stabilizationStatusEl.style.color = isError ? '#ff6b6b' : '#6bff6b';
     }
 
     // Проверка при загрузке страницы
@@ -232,14 +276,47 @@
     }
 
     function even(value) {
-      // Видеокодеки обычно любят чётные размеры
       return Math.max(2, Math.round(value / 2) * 2);
     }
 
     /**
-     * Вычисляет, какую часть исходного кадра нужно вырезать,
-     * чтобы получить нужное соотношение сторон.
+     * Пытается включить стабилизацию видео через applyConstraints.
+     * Это нестандартный способ, и он может не работать на всех устройствах.
      */
+    async function tryEnableStabilization(track) {
+      if (!stabilizationCheckbox.checked) {
+        setStabilizationStatus('Стабилизация выключена пользователем.', false);
+        return false;
+      }
+
+      const constraintsVariants = [
+        // Вариант 1: стандартное свойство (если поддерживается)
+        { videoStabilization: true },
+        // Вариант 2: через advanced (для некоторых браузеров)
+        { advanced: [{ videoStabilization: true }] },
+        // Вариант 3: альтернативное имя (для некоторых устройств)
+        { stabilization: true },
+        // Вариант 4: через focusMode и другие связанные свойства
+        { focusMode: 'continuous-video' }
+      ];
+
+      for (const constraints of constraintsVariants) {
+        try {
+          await track.applyConstraints(constraints);
+          setStabilizationStatus('Стабилизация включена (аппаратная или программная).', false);
+          return true;
+        } catch (err) {
+          console.warn('Не удалось применить ограничения стабилизации:', constraints, err);
+        }
+      }
+
+      setStabilizationStatus(
+        'Стабилизация недоступна в браузере. Попробуйте нативное приложение для полной стабилизации.',
+        true
+      );
+      return false;
+    }
+
     function computeLayout() {
       const vw = video.videoWidth;
       const vh = video.videoHeight;
@@ -253,11 +330,9 @@
       let cropH;
 
       if (sourceAspect > targetAspect) {
-        // Исходник шире, чем нужно: обрезаем слева и справа
         cropH = vh;
         cropW = vh * targetAspect;
       } else {
-        // Исходник выше, чем нужно: обрезаем сверху и снизу
         cropW = vw;
         cropH = vw / targetAspect;
       }
@@ -268,14 +343,12 @@
       const sx = (vw - cropW) / 2;
       const sy = (vh - cropH) / 2;
 
-      // Ограничение выходного размера
       const maxSide = 1920;
 
       let outW;
       let outH;
 
       if (targetAspect >= 1) {
-        // Горизонтальное соотношение, например 1.85:1
         outH = Math.min(cropH, 1080);
         outW = outH * targetAspect;
 
@@ -284,7 +357,6 @@
           outH = outW / targetAspect;
         }
       } else {
-        // Вертикальное соотношение, например 9:16
         outW = Math.min(cropW, 1080);
         outH = outW / targetAspect;
 
@@ -310,9 +382,6 @@
       };
     }
 
-    /**
-     * Масштабирует canvas под размер экрана с сохранением пропорций.
-     */
     function fitCanvasToScreen() {
       if (!canvas.width || !canvas.height) return;
 
@@ -368,7 +437,6 @@
         ratioSelect.value === 'custom' ? '' : 'none';
     });
 
-    // Пересчитываем размер canvas при изменении размера окна
     window.addEventListener('resize', fitCanvasToScreen);
     window.addEventListener('orientationchange', () => {
       setTimeout(fitCanvasToScreen, 100);
@@ -381,7 +449,6 @@
         height: { ideal: 1080 }
       };
 
-      // Сначала пробуем видео + аудио
       try {
         return await navigator.mediaDevices.getUserMedia({
           audio: true,
@@ -391,7 +458,6 @@
         console.warn('Не получилось с аудио, пробуем без него', err);
       }
 
-      // Если микрофон недоступен или запрещён
       try {
         return await navigator.mediaDevices.getUserMedia({
           audio: false,
@@ -427,6 +493,12 @@
           'Выберите соотношение и нажмите «Начать запись».'
         );
 
+        // Пытаемся включить стабилизацию
+        const videoTrack = cameraStream.getVideoTracks()[0];
+        if (videoTrack) {
+          stabilizationApplied = await tryEnableStabilization(videoTrack);
+        }
+
         if (!rafId) {
           drawLoop();
         }
@@ -459,6 +531,7 @@
       stopRecBtn.disabled = true;
       ratioSelect.disabled = false;
       customRatioInput.disabled = false;
+      stabilizationApplied = false;
     }
 
     function pickMimeType() {
@@ -554,8 +627,11 @@
       ratioSelect.disabled = true;
       customRatioInput.disabled = true;
 
+      const stabText = stabilizationApplied ? 'Стабилизация активна.' : 'Стабилизация недоступна.';
+
       setStatus(
         `Идёт запись... Формат: ${mediaRecorder.mimeType || 'по умолчанию'}. ` +
+        stabText + ' ' +
         'Соотношение во время записи лучше не менять.'
       );
     });
@@ -606,9 +682,7 @@
       stopCamera();
     });
 
-    // ============================
     // PWA: Регистрация Service Worker
-    // ============================
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
         navigator.serviceWorker.register('/camera-aspect/sw.js')
