@@ -105,28 +105,22 @@
 
     <select id="ratio">
       <!-- Горизонтальные киноформаты -->
-      <option value="1:1">1:1</option>
+      <option value="1:1">1:1 / Квадрат</option>
       <option value="1.37:1">1.37:1 / Академический</option>
       <option value="1.66:1">1.66:1 / Европейский</option>
       <option value="1.85:1" selected>1.85:1 / US widescreen</option>
       <option value="2.20:1">2.20:1 / 70mm</option>
       <option value="2.39:1">2.39:1 / Scope</option>
 
-      <!-- Вертикальные варианты -->
-      <option value="1:1.37">1:1.37 вертикальный</option>
-      <option value="1:1.66">1:1.66 вертикальный</option>
-      <option value="1:1.85">1:1.85 вертикальный</option>
-      <option value="1:2.20">1:2.20 вертикальный</option>
-      <option value="1:2.39">1:2.39 вертикальный</option>
-
-      <option value="1:37">1:37 очень узкий вертикальный</option>
+      <!-- Вертикальный формат для смартфона -->
+      <option value="9:16">9:16 / Вертикальный (смартфон)</option>
 
       <option value="custom">Своё соотношение</option>
     </select>
 
     <input
       id="customRatio"
-      placeholder="Например 1.85:1 или 1:1.85"
+      placeholder="Например 1.85:1"
       style="display: none; min-width: 220px;"
     />
   </div>
@@ -170,7 +164,6 @@
       statusEl.textContent = text;
     }
 
-    // Проверка при загрузке страницы
     window.addEventListener('load', () => {
       const problems = [];
 
@@ -195,13 +188,6 @@
       }
     });
 
-    /**
-     * Понимает:
-     * "1:1"
-     * "1.85:1"
-     * "1:1.85"
-     * "2.39"
-     */
     function parseRatio(str) {
       if (!str) return 1;
 
@@ -233,10 +219,6 @@
       return Math.max(2, Math.round(value / 2) * 2);
     }
 
-    /**
-     * Вычисляет, какую часть исходного кадра нужно вырезать,
-     * чтобы получить нужное соотношение сторон.
-     */
     function computeLayout() {
       const vw = video.videoWidth;
       const vh = video.videoHeight;
@@ -302,9 +284,6 @@
       };
     }
 
-    /**
-     * Масштабирует canvas под размер экрана с сохранением пропорций.
-     */
     function fitCanvasToScreen() {
       if (!canvas.width || !canvas.height) return;
 
@@ -360,7 +339,6 @@
         ratioSelect.value === 'custom' ? '' : 'none';
     });
 
-    // Пересчитываем размер canvas при изменении размера окна
     window.addEventListener('resize', fitCanvasToScreen);
     window.addEventListener('orientationchange', () => {
       setTimeout(fitCanvasToScreen, 100);
